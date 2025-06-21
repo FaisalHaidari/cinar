@@ -39,14 +39,24 @@ export async function GET(req) {
 export async function POST(req) {
   const session = await getServerSession(authOptions);
   if (!session) {
+    console.log('POST /api/messages: Unauthorized - no session');
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
+  
   const { receiverId, content, isToAdmin } = await req.json();
+  console.log('POST /api/messages:', { 
+    senderId: session.user.id, 
+    receiverId, 
+    content, 
+    isToAdmin, 
+    isAdmin: session.user.admin 
+  });
 
   if (isToAdmin) {
     // Eğer normal kullanıcı ise sadece yöneticiye mesaj gönderebilir
     const adminUser = await prisma.user.findFirst({ where: { admin: true } });
     if (!adminUser) {
+      console.log('POST /api/messages: Admin user not found');
       return NextResponse.json({ error: 'Admin user not found' }, { status: 404 });
     }
     const message = await prisma.message.create({
@@ -56,6 +66,7 @@ export async function POST(req) {
         content,
       },
     });
+    console.log('POST /api/messages: Message created (to admin):', message);
     return NextResponse.json(message);
   } else {
     const message = await prisma.message.create({
@@ -65,6 +76,7 @@ export async function POST(req) {
         content,
       },
     });
+    console.log('POST /api/messages: Message created (direct):', message);
     return NextResponse.json(message);
   }
 }
@@ -77,16 +89,7 @@ export async function PATCH(req) {
   const { userId } = await req.json();
 
   if (session?.user?.admin) {
-    // Mesajları okundu olarak işaretle (yönetici tarafında)
-    await prisma.message.updateMany({
-      where: {
-        senderId: userId,
-        receiverId: session.user.id,
-        read: false,
-      },
-      data: { read: true },
-    });
-    // Bu kullanıcıdan yöneticiye gelen tüm okunmamış mesajları okundu olarak işaretle
+    // Admin: Seçili kullanıcıdan gelen tüm okunmamış mesajları okundu olarak işaretle
     await prisma.message.updateMany({
       where: {
         senderId: userId,
@@ -96,18 +99,10 @@ export async function PATCH(req) {
       data: { read: true },
     });
   } else {
-    // Kullanıcı: Yönetici tarafından kendisine gelen tüm mesajları okundu olarak işaretle
+    // Kullanıcı: Yöneticiden gelen tüm okunmamış mesajları okundu olarak işaretle
     await prisma.message.updateMany({
       where: {
-        senderId: session.user.id,
-        receiverId: session.user.id,
-        read: false,
-      },
-      data: { read: true },
-    });
-    await prisma.message.updateMany({
-      where: {
-        senderId: { not: session.user.id }, // Diğer kullanıcıların gönderdiği mesajlar
+        senderId: { not: session.user.id }, // Diğer kullanıcıların (admin) gönderdiği mesajlar
         receiverId: session.user.id,
         read: false,
       },

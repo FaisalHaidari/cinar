@@ -8,7 +8,7 @@ export default function AdminMessagesPage() {
   const [users, setUsers] = useState([]);
   const [selectedUser, setSelectedUser] = useState(null);
   const [content, setContent] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [deleteMsg, setDeleteMsg] = useState("");
   // Her kullanıcı için okunmamış mesaj sayısı
   const [userUnreadCounts, setUserUnreadCounts] = useState({});
@@ -17,12 +17,18 @@ export default function AdminMessagesPage() {
   if (status !== 'authenticated' || !session?.user?.admin) return null;
 
   useEffect(() => {
-    fetch("/api/messages")
-      .then(res => res.json())
-      .then(data => setMessages(data));
-    fetch("/api/users")
-      .then(res => res.json())
-      .then(data => setUsers(data.filter(u => !u.admin)));
+    setLoading(true);
+    Promise.all([
+      fetch("/api/messages").then(res => res.json()),
+      fetch("/api/users").then(res => res.json())
+    ]).then(([messagesData, usersData]) => {
+      setMessages(messagesData);
+      setUsers(usersData.filter(u => !u.admin));
+      setLoading(false);
+    }).catch(error => {
+      console.error('Error fetching data:', error);
+      setLoading(false);
+    });
   }, []);
 
   // Kullanıcı seçildiğinde okunmamış mesajları okundu olarak işaretle
@@ -40,33 +46,62 @@ export default function AdminMessagesPage() {
     }
   }, [selectedUser]);
 
-  // Sadece yöneticiden kullanıcıya gelen mesajları göster
+  // Seçili kullanıcı ile admin arasındaki mesajları göster
   const userMessages = selectedUser
     ? messages.filter(m =>
-        (m.senderId === selectedUser.id && m.receiverId !== selectedUser.id) ||
-        (m.receiverId === selectedUser.id && m.senderId !== selectedUser.id)
+        (m.senderId === selectedUser.id && m.receiverId === session.user.id) ||
+        (m.senderId === session.user.id && m.receiverId === selectedUser.id)
       )
     : [];
 
   // Her kullanıcı için okunmamış mesaj sayısı
   function unreadCount(userId) {
-    return messages.filter(m => m.senderId === userId && !m.read).length;
+    return messages.filter(m => 
+      m.senderId === userId && 
+      m.receiverId === session.user.id && 
+      !m.read
+    ).length;
   }
 
   async function handleSend(e) {
     e.preventDefault();
     if (!content.trim() || !selectedUser) return;
     setLoading(true);
-    await fetch("/api/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ receiverId: selectedUser.id, content, isToAdmin: false })
-    });
-    setContent("");
-    fetch("/api/messages")
-      .then(res => res.json())
-      .then(data => setMessages(data));
-    setLoading(false);
+    try {
+      console.log('Sending message:', { receiverId: selectedUser.id, content, isToAdmin: false });
+      const response = await fetch("/api/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ receiverId: selectedUser.id, content, isToAdmin: false })
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Error response:', errorData);
+        throw new Error(`HTTP ${response.status}: ${errorData.error || 'Unknown error'}`);
+      }
+      
+      const result = await response.json();
+      console.log('Message sent successfully:', result);
+      
+      setContent("");
+      const updatedMessages = await fetch("/api/messages").then(res => res.json());
+      setMessages(updatedMessages);
+    } catch (error) {
+      console.error('Error sending message:', error);
+      alert('Mesaj gönderilirken hata oluştu: ' + error.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <section className="max-w-3xl mx-auto mt-8">
+        <h1 className="text-2xl font-bold mb-4 text-orange-500">Kullanıcı Mesajları (Yönetici)</h1>
+        <div className="text-gray-400 text-center py-12">Yükleniyor...</div>
+      </section>
+    );
   }
 
   if (users.length === 0) {
@@ -105,12 +140,17 @@ export default function AdminMessagesPage() {
                     onClick={async e => {
                       e.stopPropagation();
                       if (!window.confirm('Bu kullanıcının tüm mesajları ve hesabı silinsin mi?')) return;
-                      await fetch(`/api/messages?userId=${user.id}`, { method: 'DELETE' });
-                      setUsers(users.filter(u => u.id !== user.id));
-                      fetch('/api/messages').then(res => res.json()).then(data => setMessages(data));
-                      if (selectedUser?.id === user.id) setSelectedUser(null);
-                      setDeleteMsg('Kullanıcı ve mesajları başarıyla silindi.');
-                      setTimeout(() => setDeleteMsg(''), 2000);
+                      try {
+                        await fetch(`/api/messages?userId=${user.id}`, { method: 'DELETE' });
+                        setUsers(users.filter(u => u.id !== user.id));
+                        const updatedMessages = await fetch('/api/messages').then(res => res.json());
+                        setMessages(updatedMessages);
+                        if (selectedUser?.id === user.id) setSelectedUser(null);
+                        setDeleteMsg('Kullanıcı ve mesajları başarıyla silindi.');
+                        setTimeout(() => setDeleteMsg(''), 2000);
+                      } catch (error) {
+                        console.error('Error deleting user:', error);
+                      }
                     }}
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
@@ -150,9 +190,11 @@ export default function AdminMessagesPage() {
               />
               <button
                 type="submit"
-                className="bg-orange-500 text-white rounded-full w-28 px-2 py-0 font-bold hover:bg-orange-600"
+                className="bg-orange-500 text-white rounded-full w-28 px-2 py-0 font-bold hover:bg-orange-600 disabled:opacity-50"
                 disabled={loading || !content.trim()}
-              >Gönder</button>
+              >
+                {loading ? 'Gönderiliyor...' : 'Gönder'}
+              </button>
             </form>
           )}
         </div>
